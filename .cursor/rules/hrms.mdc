@@ -1,0 +1,57 @@
+# HRMS Project Rules
+
+You are working on a production-grade HR Attendance and Workforce Monitoring System.
+
+Tech stack:
+- React + Vite
+- Expo React Native
+- Supabase
+- PostgreSQL
+- TypeScript preferred
+- Tailwind CSS
+
+Architecture rules:
+- Never create duplicate geofence logic
+- Always reuse shared utilities
+- Keep components under 250 lines
+- Separate UI, business logic, and data access
+- Use service-layer architecture
+- Never store plaintext passwords
+- Never use open RLS policies
+- Always create migrations for new tables
+- Prefer reusable hooks
+- Avoid giant components
+- Use proper TypeScript types
+- Never hardcode fake data in production UI
+- Use async error handling everywhere
+- Never directly trust client GPS
+- Attendance validation must happen server-side
+- Prefer Edge Functions for sensitive operations
+
+Folder rules:
+- apps/web-admin
+- apps/mobile-attendance
+- backend/supabase
+- backend/edge-functions
+- packages/shared
+
+Coding standards:
+- Production-grade code only
+- No placeholder implementations
+- No TODO-only features
+- No fake APIs
+- No dead code
+- No duplicate utilities
+
+Security rules:
+- Use Supabase Auth
+- Use hashed passwords
+- Use JWT/session validation
+- Restrict RLS properly
+- Never expose admin operations to anon users
+
+Always:
+- explain architecture decisions
+- explain risks before refactoring
+- preserve existing functionality
+- generate incremental improvements only

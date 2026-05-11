@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { format } from 'date-fns'
-import { Bell, CalendarCheck2, LayoutDashboard, LogOut, Menu, Search, Users } from 'lucide-react'
+import { Bell, CalendarCheck2, LayoutDashboard, LogOut, MapPin, Menu, Search, ShieldAlert, Store, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -12,6 +12,9 @@ const nav = [
   { to: '/', label: 'Dashboard', Icon: LayoutDashboard },
   { to: '/employees', label: 'Employees', Icon: Users },
   { to: '/attendance', label: 'Attendance', Icon: CalendarCheck2 },
+  { to: '/shops', label: 'Shops', Icon: Store },
+  { to: '/live-monitoring', label: 'Live', Icon: MapPin },
+  { to: '/alerts', label: 'Alerts', Icon: ShieldAlert },
 ]
 
 export function Layout({ onSignOut, authUser }) {

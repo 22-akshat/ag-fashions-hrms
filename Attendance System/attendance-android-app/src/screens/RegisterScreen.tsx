@@ -12,10 +12,12 @@ import {
 } from 'react-native';
 import FaceCamera from '../components/FaceCamera';
 import { useApp } from '../context/AppContext';
+import { submitRegistrationAccessRequest } from '../lib/accessRequestsApi';
+import { getOrCreateDeviceInstallId } from '../lib/deviceId';
 import { fetchEmployeeBrief, type EmployeeBrief } from '../lib/employeeLookup';
 import { devSkipFaceMatch, runsInExpoGo } from '../lib/faceEnv';
 import { extractRegistrationEmbedding } from '../lib/faceRecognition';
-import { fetchNearestShopForGps } from '../lib/shopGeofence';
+import { fetchNearestShopForGps, type NearestShopMatch } from '../lib/shopGeofence';
 import { hasSupabaseConfig } from '../supabase';
 
 type LocPhase = 'idle' | 'loading' | 'done';
@@ -36,6 +38,12 @@ export default function RegisterScreen() {
   const [locPhase, setLocPhase] = useState<LocPhase>('idle');
   const [locDenied, setLocDenied] = useState(false);
   const [nearestShopLabel, setNearestShopLabel] = useState<string | null>(null);
+  const [nearestShopMatch, setNearestShopMatch] = useState<NearestShopMatch | null>(null);
+  const [gpsSnapshot, setGpsSnapshot] = useState<{
+    lat: number;
+    lng: number;
+    accuracy: number | null;
+  } | null>(null);
   const [locLoadError, setLocLoadError] = useState<string | null>(null);
 
   const [capturedFaceUri, setCapturedFaceUri] = useState<string | null>(null);
@@ -53,18 +61,24 @@ export default function RegisterScreen() {
     if (!hasSupabaseConfig) {
       setLocPhase('done');
       setLocLoadError('Supabase missing — cannot load store names.');
+      setNearestShopMatch(null);
+      setGpsSnapshot(null);
       return;
     }
     setLocPhase('loading');
     setLocDenied(false);
     setLocLoadError(null);
     setNearestShopLabel(null);
+    setNearestShopMatch(null);
+    setGpsSnapshot(null);
 
     try {
       const perm = await Location.requestForegroundPermissionsAsync();
       if (perm.status !== 'granted') {
         setLocDenied(true);
         setNearestShopLabel(null);
+        setNearestShopMatch(null);
+        setGpsSnapshot(null);
         setLocPhase('done');
         return;
       }
@@ -72,17 +86,28 @@ export default function RegisterScreen() {
       const pos = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
       });
+      setGpsSnapshot({
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        accuracy:
+          pos.coords.accuracy != null && Number.isFinite(pos.coords.accuracy)
+            ? pos.coords.accuracy
+            : null,
+      });
+
       const match = await fetchNearestShopForGps(
         pos.coords.latitude,
         pos.coords.longitude,
       );
 
       if (!match) {
+        setNearestShopMatch(null);
         setNearestShopLabel('डेटाबेस में कोई शॉप मिल नहीं रहा.');
         setLocPhase('done');
         return;
       }
 
+      setNearestShopMatch(match);
       const name = match.shop.name?.trim() || 'Store';
       if (match.insideRadius) {
         setNearestShopLabel(`${name} • आप स्टोर की सीमा (रेडियस) में हैं`);
@@ -95,6 +120,8 @@ export default function RegisterScreen() {
       const msg = e instanceof Error ? e.message : String(e);
       setLocLoadError(msg);
       setNearestShopLabel(null);
+      setNearestShopMatch(null);
+      setGpsSnapshot(null);
       setLocPhase('done');
     }
   }, []);
@@ -166,6 +193,35 @@ export default function RegisterScreen() {
         Alert.alert(
           'Face model unavailable',
           'Build a custom dev client (see README) or set EXPO_PUBLIC_DEV_SKIP_FACE_MATCH=true for testing only.',
+        );
+        return;
+      }
+
+      if (!gpsSnapshot) {
+        Alert.alert(
+          'स्थान',
+          'GPS डेटा उपलब्ध नहीं — Refresh GPS करें और फिर कोशिश करें।',
+        );
+        return;
+      }
+
+      try {
+        const deviceId = await getOrCreateDeviceInstallId();
+        await submitRegistrationAccessRequest({
+          employeeUuid: resolvedEmployee.id,
+          requesterName: resolvedEmployee.full_name,
+          cardNo: resolvedEmployee.card_no || trimmedCard,
+          requestedShopId: nearestShopMatch?.shop.id ?? null,
+          lat: gpsSnapshot.lat,
+          lng: gpsSnapshot.lng,
+          accuracyM: gpsSnapshot.accuracy,
+          deviceId,
+        });
+      } catch (accessErr) {
+        const msg = accessErr instanceof Error ? accessErr.message : String(accessErr);
+        Alert.alert(
+          'Access request failed',
+          `${msg}\n\nHR डैशबोर्ड पर अनुरोध बिना इसके नहीं दिखेगा। नेटवर्क चेक करके फिर कोशिश करें।`,
         );
         return;
       }

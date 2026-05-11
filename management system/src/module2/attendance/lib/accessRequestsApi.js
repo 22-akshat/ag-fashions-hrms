@@ -4,7 +4,9 @@ export async function listAccessRequests() {
   if (!supabase) return []
   const { data, error } = await supabase
     .from('attendance_access_requests')
-    .select('id,requester_name,card_no,requested_shop_id,status,created_at,request_lat,request_lng')
+    .select(
+      'id,employee_id,requester_name,card_no,requested_shop_id,status,created_at,request_lat,request_lng',
+    )
     .eq('status', 'pending')
     .order('created_at', { ascending: false })
   if (error) throw error

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Navigation, Radio } from 'lucide-react'
 import {
   addMonths,
@@ -28,8 +28,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { haversineKm } from '@/lib/geo'
 
-const ATTENDANCE_KEY = 'attendance:v1'
 const STATUS_COLORS = {
   Present: 'bg-[#dcf5e6] text-[#2d8a58] ring-1 ring-[#9fd6b4]',
   Absent: 'bg-[#ffe2df] text-[#bf4d47] ring-1 ring-[#f0a6a2]',
@@ -44,17 +44,6 @@ function todayMonth() {
   return format(new Date(), 'yyyy-MM')
 }
 
-function loadAttendanceStore() {
-  try {
-    const raw = window.localStorage.getItem(ATTENDANCE_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
 function monthDate(monthValue) {
   return parse(`${monthValue}-01`, 'yyyy-MM-dd', new Date())
 }
@@ -67,29 +56,12 @@ function statusClass(status) {
   return STATUS_COLORS[status] ?? 'bg-muted text-muted-foreground'
 }
 
-function employeeStatusOnDate(store, employeeId, dateIso) {
-  return store[dateIso]?.[employeeId]?.status ?? ''
-}
-
 function isValidCoordinate(value) {
   return Number.isFinite(value) && Math.abs(value) <= 180
 }
 
-function haversineKm(lat1, lng1, lat2, lng2) {
-  const toRad = (n) => (n * Math.PI) / 180
-  const earthRadiusKm = 6371
-  const dLat = toRad(lat2 - lat1)
-  const dLng = toRad(lng2 - lng1)
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2)
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-  return earthRadiusKm * c
-}
-
 export function Attendance() {
   const { employees, loading, loadError, refresh, remote } = useEmployees()
-  const [store] = useState(() => loadAttendanceStore())
   const [selectedEmployee, setSelectedEmployee] = useState(null)
   const [activeMonth, setActiveMonth] = useState(todayMonth)
   const [requests, setRequests] = useState([])
@@ -106,6 +78,8 @@ export function Attendance() {
   const [liveResult, setLiveResult] = useState(null)
   const [liveShop, setLiveShop] = useState(null)
   const [liveError, setLiveError] = useState('')
+  /** Rows for the selected calendar month only — used for member-card P/A/L/H counts. */
+  const [attendanceMonthRows, setAttendanceMonthRows] = useState([])
 
   const fetchAccessRequests = useCallback(async () => {
     setRequestLoading(true)
@@ -133,6 +107,44 @@ export function Attendance() {
     }
     setAttendanceLogs((data ?? []).map(normalizeAttendanceLogRow))
   }, [])
+
+  const fetchAttendanceMonthSummary = useCallback(async () => {
+    if (!supabase) {
+      setAttendanceMonthRows([])
+      return
+    }
+    const monthStart = startOfMonth(monthDate(activeMonth))
+    const monthEndExclusive = addMonths(monthStart, 1)
+    const gte = monthStart.toISOString()
+    const lt = monthEndExclusive.toISOString()
+
+    const pageSize = 1000
+    const all = []
+    let from = 0
+    for (;;) {
+      const { data, error } = await supabase
+        .from('attendance_logs')
+        .select('employee_id,status,timestamp')
+        .gte('timestamp', gte)
+        .lt('timestamp', lt)
+        .order('timestamp', { ascending: true })
+        .range(from, from + pageSize - 1)
+
+      if (error) {
+        console.error(error)
+        setAttendanceMonthRows([])
+        return
+      }
+      const chunk = data ?? []
+      all.push(...chunk)
+      if (chunk.length < pageSize) break
+      from += pageSize
+    }
+    setAttendanceMonthRows(all)
+  }, [activeMonth])
+
+  const fetchAttendanceMonthSummaryRef = useRef(fetchAttendanceMonthSummary)
+  fetchAttendanceMonthSummaryRef.current = fetchAttendanceMonthSummary
 
   const fetchEmployeeLocations = useCallback(async () => {
     if (!supabase) return
@@ -178,6 +190,7 @@ export function Attendance() {
         { event: '*', schema: 'public', table: 'attendance_logs' },
         () => {
           void fetchAttendanceLogs()
+          void fetchAttendanceMonthSummaryRef.current()
         },
       )
       .subscribe()
@@ -200,6 +213,12 @@ export function Attendance() {
       void supabase.removeChannel(locationChannel)
     }
   }, [fetchAccessRequests, fetchAttendanceLogs, fetchEmployeeLocations])
+
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !supabase) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- refetch month summary when activeMonth changes
+    void fetchAttendanceMonthSummary()
+  }, [fetchAttendanceMonthSummary])
 
   async function handleRequestStatus(requestId, status) {
     setBusyRequestId(requestId)
@@ -307,13 +326,31 @@ export function Attendance() {
   const startOffset = getDay(monthStart)
 
   const memberCards = useMemo(() => {
+    const latestByEmpDay = new Map()
+    for (const row of attendanceMonthRows) {
+      const eid = row.employee_id
+      const dateIso = String(row.timestamp ?? '').slice(0, 10)
+      if (!eid || !dateIso) continue
+      const key = `${eid}|${dateIso}`
+      const ts = new Date(row.timestamp).getTime()
+      if (Number.isNaN(ts)) continue
+      const prev = latestByEmpDay.get(key)
+      if (!prev || ts >= prev.ts) {
+        latestByEmpDay.set(key, {
+          ts,
+          status: normalizeAttendanceStatus(row.status),
+        })
+      }
+    }
+
     return employees.map((e) => {
       let present = 0
       let absent = 0
       let leave = 0
       let half = 0
       monthDays.forEach((d) => {
-        const st = employeeStatusOnDate(store, e.id, isoFromDate(d))
+        const entry = latestByEmpDay.get(`${e.id}|${isoFromDate(d)}`)
+        const st = entry?.status ?? ''
         if (st === 'Present') present += 1
         if (st === 'Absent') absent += 1
         if (st === 'Leave') leave += 1
@@ -321,7 +358,7 @@ export function Attendance() {
       })
       return { employee: e, present, absent, leave, half }
     })
-  }, [employees, monthDays, store])
+  }, [employees, monthDays, attendanceMonthRows])
 
   const todayAttendance = useMemo(() => {
     const todayText = new Date().toDateString()
@@ -591,8 +628,7 @@ export function Attendance() {
             ))}
             {monthDays.map((d) => {
               const iso = isoFromDate(d)
-              const localSt = selectedEmployee ? employeeStatusOnDate(store, selectedEmployee.id, iso) : ''
-              const st = calendarLogs[iso] || localSt || ''
+              const st = calendarLogs[iso] || ''
               return (
                 <div key={iso} className={`min-h-16 rounded-md p-2 text-xs ${statusClass(st)}`}>
                   <p className="font-semibold">{format(d, 'd')}</p>
