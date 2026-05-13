@@ -1,3 +1,4 @@
+import { NativeModules, Platform } from 'react-native';
 import RNFS from 'react-native-fs';
 
 import type { LivenessChallengeType } from './livenessChallenge';
@@ -9,7 +10,7 @@ export type LivenessFrame = {
 
 export type LivenessValidationResult = {
   ok: boolean;
-  confidence: number; // 0..1 heuristic
+  confidence: number;
   reason?: string;
   metrics: {
     frameCount: number;
@@ -21,11 +22,28 @@ export type LivenessValidationResult = {
 };
 
 type FaceDetectionModule = {
-  checkLiveness?: (imageBase64: string) => Promise<{ faceDetected?: boolean; isLive?: boolean }>;
+  checkLivenessFromUri?: (uri: string) => Promise<{ faceDetected?: boolean; isLive?: boolean }>;
 };
 
 async function tryLoadFD(): Promise<FaceDetectionModule | null> {
-  return null;
+  if (Platform.OS !== 'android') return null;
+  const FaceBiometrics = NativeModules.FaceBiometrics as
+    | { silentLivenessScore?: (uri: string, opts?: object) => Promise<number> }
+    | undefined;
+  if (!FaceBiometrics?.silentLivenessScore) return null;
+  return {
+    checkLivenessFromUri: async (uri: string) => {
+      try {
+        const score = await FaceBiometrics.silentLivenessScore!(uri, {});
+        const thr = Number(
+          (process.env as Record<string, string | undefined>)['EXPO_PUBLIC_SILENT_LIVENESS_MIN'] ?? 0.35,
+        ) || 0.35;
+        return { faceDetected: true, isLive: score >= thr };
+      } catch {
+        return { faceDetected: false, isLive: false };
+      }
+    },
+  };
 }
 
 async function uriToBase64(uri: string): Promise<string> {
@@ -49,13 +67,7 @@ function clamp01(n: number): number {
 }
 
 /**
- * Phase-3: lightweight liveness heuristics.
- *
- * Constraints:
- * - No heavy ML. Uses optional native liveness probe if available.
- * - Ensures temporal sequence and rejects identical/replayed frames.
- *
- * This is NOT a cryptographic anti-spoof guarantee; it raises the bar for static photo replays.
+ * Motion + temporal uniqueness gate, optionally boosted by native silent anti-spoof (Android ONNX).
  */
 export async function validateLivenessSequence(input: {
   challenge: LivenessChallengeType;
@@ -108,10 +120,10 @@ export async function validateLivenessSequence(input: {
   const FD = await tryLoadFD();
   let faceDetectedFrames = 0;
   let liveFrames = 0;
-  if (FD?.checkLiveness) {
-    for (const b64 of base64s) {
+  if (FD?.checkLivenessFromUri) {
+    for (const f of frames) {
       try {
-        const r = await FD.checkLiveness(b64);
+        const r = await FD.checkLivenessFromUri(f.uri);
         if (r?.faceDetected) faceDetectedFrames += 1;
         if (r?.isLive) liveFrames += 1;
       } catch {
@@ -135,7 +147,7 @@ export async function validateLivenessSequence(input: {
 
   let confidence = 0.45 * uniqScore + 0.35 * temporalScore + 0.2 * liveScore;
 
-  if (input.challenge === 'BLINK_TWICE' && FD?.checkLiveness) {
+  if (input.challenge === 'BLINK_TWICE' && FD?.checkLivenessFromUri) {
     confidence += 0.05;
   }
 
@@ -151,8 +163,8 @@ export async function validateLivenessSequence(input: {
       frameCount: frames.length,
       durationMs,
       uniqueFrameRatio,
-      faceDetectedFrames: FD?.checkLiveness ? faceDetectedFrames : undefined,
-      liveFrames: FD?.checkLiveness ? liveFrames : undefined,
+      faceDetectedFrames: FD?.checkLivenessFromUri ? faceDetectedFrames : undefined,
+      liveFrames: FD?.checkLivenessFromUri ? liveFrames : undefined,
     },
   };
 }

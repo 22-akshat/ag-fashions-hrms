@@ -14,7 +14,7 @@ import {
 import { useEmployeeAuth } from '../context/EmployeeAuthContext';
 import FaceCamera from '../components/FaceCamera';
 import { extractRegistrationEmbedding } from '../lib/faceRecognition';
-import { faceMatchThreshold } from '../lib/faceEnv';
+import { faceCosineThreshold } from '../lib/faceEnv';
 import { compareFaceEmbeddings } from '../modules/face/lib/faceMatcher';
 import { lookupEmployeeByCardNo } from '../modules/face/lib/employeeLookup';
 import { hasSupabaseConfig, supabase } from '../supabase';
@@ -74,14 +74,14 @@ export default function EmployeeLoginScreen({ onOpenFaceRegistration, onOpenRegi
         throw new Error('No enrolled face template found. Complete registration first.');
       }
 
-      const fresh = await extractRegistrationEmbedding(uri, { devTemplateSeed: row.id });
+      const fresh = await extractRegistrationEmbedding(uri);
       if (!fresh?.length) {
         throw new Error(
-          'Could not derive a face template from this photo. Use a release build with ML or set EXPO_PUBLIC_DEV_SKIP_FACE_MATCH for testing.',
+          'Could not derive a face template from this photo. Install ONNX models (see android/app/src/main/assets/models/README.md) and rebuild.',
         );
       }
       const result = compareFaceEmbeddings(parsed, fresh);
-      if (!Number.isFinite(result.score) || result.score < faceMatchThreshold) {
+      if (!Number.isFinite(result.score) || result.score < faceCosineThreshold) {
         throw new Error('Face does not match the registered template. Try again.');
       }
       setShowFaceVerify(false);

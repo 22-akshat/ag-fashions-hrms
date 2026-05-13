@@ -89,9 +89,7 @@ export default function ScanScreen() {
         }
 
         try {
-          await verifyScanAgainstEmbedding(registeredFaceEmbedding, currentFaceUri, {
-            devTemplateSeed: employeeId,
-          });
+          await verifyScanAgainstEmbedding(registeredFaceEmbedding, currentFaceUri);
         } catch (e) {
           const msg = e instanceof Error ? e.message : 'Face verification failed';
           try {

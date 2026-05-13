@@ -21,15 +21,22 @@ class FaceBiometricsPipeline(
   private val arc = AtomicReference<ArcFaceOnnx?>(null)
   private val spoil = AtomicReference<AntiSpoofOnnx?>(null)
 
+  private var detThreshCfg = 0.5f
+  private var nmsThreshCfg = 0.4f
+
   var antiSpoofThreshold: Float = 0.45f
+
   var scrfdNms: Float
-    get() = scrfd.get()?.nmsThresh ?: 0.4f
+    get() = nmsThreshCfg
     set(v) {
+      nmsThreshCfg = v
       scrfd.get()?.nmsThresh = v
     }
+
   var scrfdDet: Float
-    get() = scrfd.get()?.detThresh ?: 0.5f
+    get() = detThreshCfg
     set(v) {
+      detThreshCfg = v
       scrfd.get()?.detThresh = v
     }
 
@@ -47,9 +54,6 @@ class FaceBiometricsPipeline(
     val det = s.scrfd.detectMaxFace(bitmap) ?: throw IllegalStateException("NO_FACE")
     if (det.kps == null || det.kps.size < 10) {
       throw IllegalStateException("NO_LANDMARKS")
-    }
-    if (det.score < scrfdDet) {
-      throw IllegalStateException("LOW_DETECTION_SCORE")
     }
 
     val expand = expandSquare(det, bitmap.width, bitmap.height, 0.25f)
@@ -96,6 +100,8 @@ class FaceBiometricsPipeline(
     val bAs = readAssetOrThrow(FILE_SPOOF)
 
     val s = ScrfdDetector(env, bScrfd)
+    s.detThresh = detThreshCfg
+    s.nmsThresh = nmsThreshCfg
     val a = ArcFaceOnnx(env, bArc)
     val sp = AntiSpoofOnnx(env, bAs, SPOOF_INPUT)
     scrfd.set(s)
@@ -137,7 +143,6 @@ class FaceBiometricsPipeline(
   }
 
   companion object {
-    private const val TAG = "FaceBiometricsPipeline"
     const val FILE_SCRFD = "scrfd_500m_bnkps.onnx"
     const val FILE_ARC = "arcface_w600k_r50.onnx"
     const val FILE_SPOOF = "silent_fas_mini.onnx"

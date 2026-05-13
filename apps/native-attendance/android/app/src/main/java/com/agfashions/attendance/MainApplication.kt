@@ -2,7 +2,7 @@ package com.agfashions.attendance
 
 import android.app.Application
 import com.facebook.react.PackageList
-import com.agfashions.attendance.mlkit.FaceGeometryPackage
+import com.agfashions.attendance.biometrics.FaceBiometricsPackage
 import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
@@ -15,7 +15,7 @@ class MainApplication : Application(), ReactApplication {
       context = applicationContext,
       packageList =
         PackageList(this).packages.apply {
-          add(FaceGeometryPackage())
+          add(FaceBiometricsPackage())
         },
     )
   }

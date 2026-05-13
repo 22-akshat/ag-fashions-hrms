@@ -7,7 +7,15 @@ export const devSkipFaceMatch =
 export const enableLiveness =
   String(process.env.EXPO_PUBLIC_ENABLE_LIVENESS ?? 'false').trim().toLowerCase() === 'true';
 
-export const faceMatchThreshold = Number(process.env.EXPO_PUBLIC_FACE_MATCH_THRESHOLD ?? 0.55);
+/** Legacy name kept for attendance RPC payloads — cosine threshold for ArcFace (0..1). */
+export const faceMatchThreshold = Number(process.env.EXPO_PUBLIC_FACE_MATCH_THRESHOLD ?? 0.42);
+
+/** Preferred ArcFace cosine gate (alias of faceMatchThreshold unless overridden). */
+export const faceCosineThreshold = Number(
+  (process.env as Record<string, string | undefined>)['EXPO_PUBLIC_FACE_COSINE_THRESHOLD'] ??
+    process.env.EXPO_PUBLIC_FACE_MATCH_THRESHOLD ??
+    0.42,
+);
 
 export const livenessThreshold = Number(process.env.EXPO_PUBLIC_LIVENESS_THRESHOLD ?? 0.6);
 

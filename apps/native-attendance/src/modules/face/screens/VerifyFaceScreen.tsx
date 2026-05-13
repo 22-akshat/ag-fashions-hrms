@@ -113,7 +113,7 @@ export default function VerifyFaceScreen({ onBack }: Props) {
         if (!sb) throw new Error('Supabase client not configured.');
         if (!employee?.id) throw new Error('Employee not loaded.');
 
-        const fresh = await generateFaceEmbedding(uri, employee.id);
+        const fresh = await generateFaceEmbedding(uri);
         const result = compareFaceEmbeddings(stored, fresh);
         setScore(result.score);
         setDistance(result.distance);

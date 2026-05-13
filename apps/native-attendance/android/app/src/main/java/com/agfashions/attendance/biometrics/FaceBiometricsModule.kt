@@ -87,6 +87,5 @@ class FaceBiometricsModule(
   override fun invalidate() {
     pipeline.release()
     executor.shutdown()
-    super.invalidate()
   }
 }

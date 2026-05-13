@@ -5,6 +5,7 @@ import type { LookupEmployeeSummary } from '../lib/employeeLookup';
 import { lookupEmployeeByCardNo } from '../lib/employeeLookup';
 import { registerEmployeeDevice } from '../lib/deviceBinding';
 import { generateFaceEmbedding } from '../lib/faceEmbedding';
+import { CURRENT_FACE_EMBEDDING_VERSION } from '../lib/embeddingVersion';
 import { getOrCreateDeviceInstallId } from '../../../lib/deviceId';
 
 type Phase =
@@ -75,14 +76,14 @@ export function useFaceRegistration() {
       setError(null);
       setPhase('saving');
       try {
-        const emb = await generateFaceEmbedding(uri, employee.id);
+        const emb = await generateFaceEmbedding(uri);
         setEmbedding(emb);
         const deviceId = await getOrCreateDeviceInstallId();
         await registerEmployeeDevice({
           employeeId: employee.id,
           embedding: emb,
           deviceId,
-          embeddingVersion: 1,
+          embeddingVersion: CURRENT_FACE_EMBEDDING_VERSION,
           forceReplaceApproved: replaceApproved,
         });
         setPhase('done');

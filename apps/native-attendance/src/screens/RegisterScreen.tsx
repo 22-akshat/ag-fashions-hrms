@@ -16,7 +16,6 @@ import { useApp } from '../context/AppContext';
 import { submitRegistrationAccessRequest } from '../lib/accessRequestsApi';
 import { getOrCreateDeviceInstallId } from '../lib/deviceId';
 import { fetchEmployeeBrief, type EmployeeBrief } from '../lib/employeeLookup';
-import { devSkipFaceMatch } from '../lib/faceEnv';
 import { extractRegistrationEmbedding } from '../lib/faceRecognition';
 import {
   ensureForegroundLocationPermission,
@@ -229,32 +228,21 @@ export default function RegisterScreen() {
         return;
       }
 
-      const empSeed = resolvedEmployee?.id ?? trimmedCard;
-      let embedding: number[] | null = null;
-      if (devSkipFaceMatch) {
-        embedding =
-          (await extractRegistrationEmbedding(previewUri, { devTemplateSeed: empSeed })) ?? [];
-      } else {
-        const parts = await Promise.all(
-          faceCaptureUris.map((u) =>
-            extractRegistrationEmbedding(u, { devTemplateSeed: empSeed }),
-          ),
+      const parts = await Promise.all(faceCaptureUris.map((u) => extractRegistrationEmbedding(u)));
+      const ok = parts.filter((p): p is number[] => Boolean(p && p.length > 0));
+      if (ok.length !== 4) {
+        Alert.alert(
+          'Face',
+          'All 4 photos must produce a valid template. Improve lighting, add ONNX models (assets/models), rebuild, then tap Retake all 4.',
         );
-        const ok = parts.filter((p): p is number[] => Boolean(p && p.length > 0));
-        if (ok.length !== 4) {
-          Alert.alert(
-            'Face',
-            'All 4 photos must produce a valid template. Improve lighting and tap Retake all 4.',
-          );
-          return;
-        }
-        embedding = averageEmbedding(ok);
+        return;
       }
+      const embedding = averageEmbedding(ok);
 
-      if (!devSkipFaceMatch && (!embedding || embedding.length === 0)) {
+      if (!embedding || embedding.length === 0) {
         Alert.alert(
           'Face model unavailable',
-          'Build a custom dev client (see README) or set EXPO_PUBLIC_DEV_SKIP_FACE_MATCH=true for testing only.',
+          'Place ONNX models under android/app/src/main/assets/models/ per README and rebuild the Android app.',
         );
         return;
       }
@@ -336,15 +324,10 @@ export default function RegisterScreen() {
         1) Card → employee name · 2) GPS → store · 3) Four face photos · 4) Submit to HR
       </Text>
 
-      {devSkipFaceMatch ? (
-        <Text style={styles.notice}>
-          Dev mode: face embedding skipped. Phase-2 requires server-issued face session tokens for attendance.
-        </Text>
-      ) : (
-        <Text style={styles.hint}>
-          Face: wire a native embedding pipeline or set EXPO_PUBLIC_DEV_SKIP_FACE_MATCH=true for testing only.
-        </Text>
-      )}
+      <Text style={styles.hint}>
+        Face templates use on-device ONNX (SCRFD + anti-spoof + ArcFace). Requires rebuilt Android APK with
+        model assets.
+      </Text>
 
       <Text style={styles.fieldLabel}>Card number</Text>
       <TextInput
