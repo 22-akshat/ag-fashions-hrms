@@ -29,11 +29,10 @@ Architecture rules:
 - Prefer Edge Functions for sensitive operations
 
 Folder rules:
-- apps/web-admin
-- apps/mobile-attendance
-- backend/supabase
-- backend/edge-functions
-- packages/shared
+- apps/web-admin — Vite admin UI; Supabase migrations/schema in `apps/web-admin/supabase/`; HR auth in `src/core/auth/`
+- apps/mobile-attendance — Expo attendance app; `attendance_logs` writes only via Edge `mark-attendance` + `EXPO_PUBLIC_ATTENDANCE_EDGE_INVOCATION_KEY`
+- packages/shared — cross-app pure utilities only (e.g. geo); no React hooks, APIs, or clients
+- backend/edge-functions — docs + rollout notes; deployable function sources live under `apps/web-admin/supabase/functions/`
 
 Coding standards:
 - Production-grade code only

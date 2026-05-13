@@ -1,0 +1,17 @@
+# Supabase CLI config. Set `project_id` via `supabase link` under apps/web-admin.
+# Edge Function: server-authoritative mark path (phased rollout; legacy direct INSERT unchanged).
+
+[functions.mark-attendance]
+verify_jwt = false
+
+[functions.hr-provision-employee-auth]
+verify_jwt = true
+
+[functions.validate-device-attestation]
+verify_jwt = false
+
+[functions.security-policy-engine]
+verify_jwt = false
+
+[functions.anomaly-score-engine]
+verify_jwt = false

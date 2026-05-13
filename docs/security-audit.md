@@ -1,143 +1,121 @@
 # Security audit — HRMS codebase (evidence-based)
 
-**Scope:** Implemented code and SQL under this repository only (`management system`, `Attendance System/attendance-android-app`, `management system/supabase/schema.sql`, `management system/supabase/migrations/`).  
-**Not in scope:** Supabase project dashboard settings, hosting secrets, network controls, or features not present in the repo (e.g. no Edge Functions, no `service_role` usage in app code).
+**Scope:** Implemented code and SQL under this repository only (`apps/web-admin`, `apps/mobile-attendance`, `apps/web-admin/supabase/schema.sql`, `apps/web-admin/supabase/migrations/`).  
+**Included in-repo:** Edge Function `mark-attendance` (`apps/web-admin/supabase/functions/mark-attendance/`).  
+**Not in scope:** Supabase project dashboard settings, hosting secrets, network controls outside this repo.
 
 ---
 
 ## 1. Current authentication risks
 
-| Risk | Evidence |
-|--------|-----------|
-| **Plaintext password verification** | `hr_login_credentials.password` is matched with `.eq('password', normalizedPassword)` in `management system/src/module0/auth/lib/login.js`. Passwords are stored and compared as plaintext at the database layer (column `password text not null` in `management system/supabase/schema.sql`). |
-| **Credential table readable/writable by anon** | RLS policies `hr_login_credentials_*_anon` use `using (true)` / `with check (true)` in `schema.sql`; `grant ... to anon, authenticated` on the same table. Anyone with the anon key can **SELECT** rows (including password column if selected), **INSERT/UPDATE/DELETE** per grants + policies. |
-| **No Supabase Auth for HR** | Web client is `createClient(url, anonKey)` in `management system/src/module1/employees/lib/supabase/client.js` — no `signInWithPassword`, no JWT session for data access. |
-| **Session is browser-only** | `management system/src/App.jsx` sets `localStorage` keys `hrms-authenticated` and `hrms-auth-user` after `verifyLoginCredentials` succeeds. This does **not** bind Postgres/RLS to an authenticated Supabase user; it only gates the React router UI. |
-| **Login copy vs implementation** | `LoginPage.jsx` text references “Supabase username/password”; actual implementation queries `hr_login_credentials` via anon client (`login.js`), not Supabase Auth. |
+**Web admin:** `supabase.auth.signInWithPassword` via `apps/web-admin/src/core/auth/authApi.js`, `AuthProvider`, JWT session.
+
+| Risk | Evidence / note |
+|--------|------------------|
+| **`hr_login_credentials` removed post-migration** | Migration `20260515120000_remove_legacy_attendance_and_credentials.sql` drops the table after it is emptied. Historical definition: `20260508144500_add_hr_login_credentials.sql`. |
+| **JWT + HR allow-list** | RLS migrations (`20260514120000_rls_hr_users_and_hardening.sql`) require `public.hr_users` + `is_hr_user(auth.uid())` for HR reads/writes on several tables (see migrate file). Mis-seeded allow-list ⇒ broken admin UI. |
+| **Mobile anon key** | Attendance/register flows still rely on anon for some APIs; punching uses Edge + **`EXPO_PUBLIC_ATTENDANCE_EDGE_INVOCATION_KEY`** (high sensitivity — treat like a bearer secret until device auth arrives). |
 
 ---
 
-## 2. Current RLS risks
+## 2. Current RLS / grants (incremental tightening)
 
-RLS is **enabled** on sensitive tables but policies are **permissive** for the `anon` role where the app uses the anon key.
+Treat **`schema.sql` as illustrative** — authoritative behavior is **`supabase/migrations/*.sql`** applied in chronological order (`20260514120000…`, then `20260515120000…`).
 
-| Table | Issue | Evidence |
-|--------|--------|-----------|
-| `public.employees` | Full CRUD for anon: `employees_*_anon` all use `(true)`. | `schema.sql` |
-| `public.hr_login_credentials` | Full CRUD + select for anon with `(true)`. | `schema.sql` |
-| `public.attendance_access_requests` | Full CRUD + select for anon with `(true)`. | `schema.sql`, migration `20260508105500_add_attendance_access_requests.sql` |
-| `public.attendance_logs` | **Select and insert** for anon with `(true)` (“legacy” policies). **Update/delete** for `authenticated` with `(true)` (still no row ownership). | `schema.sql`, `20260509193000_add_shops_and_attendance_logs.sql` |
-| `public.shops` | Select for anon/authenticated with `(true)`; write for `authenticated` with `(true)`. Web HR client uses **anon** only — writes not available from that client without a different role. | `schema.sql` |
-| `public.employee_locations` | Policy `"Employees can upsert own location"` uses `using (true)` and `with check (true)` with grants to anon. **No** tie to `auth.uid()` or device identity. | `20260509195500_add_employee_locations_realtime.sql` |
+**Post–`20260515120000`:**
 
-**Conclusion:** RLS exists in name only for anon-driven clients; it does not enforce least privilege or identity.
+| Surface | Behaviour |
+|---------|-----------|
+| `attendance_logs` | **`INSERT`** via **service_role** only (Edge). Anon/`authenticated` **INSERT** revoked. HR reads/updates/deletes via `is_hr_user` policies (`20260514120000`). |
+| `employees` | HR CRUD authenticated + `is_hr_user`; anon **SELECT Active** rows only (mobile resolve). |
+| `shops` | HR CRUD + `is_hr_user`; anon **SELECT** read-only. |
+| `employee_locations` | HR **SELECT**; anon **INSERT/UPDATE** retained temporarily (spoof risk — below). See `locationTask.ts` header comment + TODO(authed-device). |
+| `attendance_access_requests` | HR authenticated read/update/delete; anon insert/select narrowed vs historical “everything” (`202605141…`). |
+
+**Eliminated:**
+
+- **`hr_login_credentials`** table (once migration succeeds with empty table).
+- **Anon `INSERT` into `attendance_logs`** (`attendance_logs_insert_anon_mobile_legacy` dropped).
 
 ---
 
 ## 3. Client-side trust issues
 
-| Area | What the code trusts | Evidence |
-|--------|----------------------|-----------|
-| **HR “logged in” state** | Browser `localStorage` flags only. | `App.jsx` |
-| **Face verification flag** | Mobile sets `face_verified` on insert; dev path can skip face match and insert with `face_verified: false`. | `attendance-android-app/src/lib/attendanceApi.ts`, `ScanScreen.tsx` (referenced pattern: `markAttendance` + `devSkipFaceMatch` in same app) |
-| **Geofence** | Mobile decides inside/outside using device GPS vs fence from DB or env; if no fence, **treated as inside**. | `attendance-android-app/src/lib/locationChecker.ts` (`hasFence` false ⇒ `inside: true`) |
-| **Employee identity for punches** | Card number or UUID resolved client-side then used in insert. | `employeeIdResolve.ts`, `attendanceApi.ts` |
-| **Live distance UI (web)** | HR “Live Attendance” uses request GPS + shop coords and **client-side** haversine in `Attendance.jsx` — informational, not an enforcement boundary. | `Attendance.jsx` (`haversineKm`, `LIVE_DISTANCE_LIMIT_METERS`) |
-
-There is **no** server-side validation path in this repository for attendance, geofence, or face outcomes.
+| Area | What still depends on trust |
+|--------|------------------------------|
+| **HR session (web)** | Supabase Auth JWT + seeded `hr_users`. |
+| **Face verification** | Client sends `face_verified` into Edge payload; Edge does **not** re-verify biometrics server-side. |
+| **Pre-check geofence (mobile)** | Client-side `verifyGeofence` before invoking Edge — UX only; authoritative check is Edge `mark-attendance`. |
+| **Edge invocation key** | Shared secret embedded in mobile build — anyone with APK + reverse engineering can replay invocations knowing another employee UUID + GPS spoofing caveats |
 
 ---
 
-## 4. Location spoofing risks
+## 4. Location spoofing risks (`employee_locations`)
 
 | Risk | Evidence |
 |--------|-----------|
-| **GPS is attacker-controlled on device** | Expo `Location.getCurrentPositionAsync` / background updates supply coordinates consumed by the app. No attestation or server-side verification in repo. |
-| **`employee_locations` accepts arbitrary coordinates** | Background task upserts `lat`, `lng`, `accuracy` from the device into Supabase. | `attendance-android-app/src/locationTask.ts` |
-| **DB does not validate plausibility** | Columns are `double precision`; RLS does not restrict which `employee_id` may be written beyond “anon can do everything” on that table. | `20260509195500_add_employee_locations_realtime.sql`, `schema.sql` grants/policies |
-| **Access request GPS** | Mobile submits `request_lat`, `request_lng`, `request_accuracy_m` via `submitRegistrationAccessRequest` in `attendance-android-app/src/lib/accessRequestsApi.ts`; insert allowed for anon per `schema.sql`. |
+| Still **anonymous upsert path** via anon key | `apps/mobile-attendance/src/locationTask.ts` — documented temporary risk pending authenticated device strategy |
+| GPS attacker-controlled | No attestation in repo |
 
 ---
 
-## 5. Attendance forgery risks
+## 5. Attendance forgeability (Edge phase)
 
-| Risk | Evidence |
-|--------|-----------|
-| **Anyone with anon key can insert `attendance_logs`** | Policy `attendance_logs_insert_legacy` allows insert to anon with `with check (true)`. | `schema.sql` |
-| **No server binding of punch to caller** | Insert only requires a valid `employee_id` FK to `employees`. No `auth.uid()`, no signed device token, no rate limit in SQL/app. | `attendanceApi.ts`, `schema.sql` |
-| **Forged `face_verified` and `status`** | Mobile defaults `status: 'present'`; `face_verified` is a boolean from client logic. A custom HTTP client using the same anon key could insert arbitrary allowed `status` values per check constraint. | `attendanceApi.ts`, `attendance_logs_status_chk` in `schema.sql` |
-| **Custom client bypasses app geofence/face** | Geofence and face checks run only in the mobile app before insert; Postgres does not re-validate. | `locationChecker.ts`, `attendanceApi.ts`, RLS policies |
+**Reduced versus legacy:**
 
----
+- Rows require Edge insert with server timestamp, duplicate window, HR Active employee checks, Supabase-shop geofence (server recomputes from lat/lng + `shops`).
+- **`EXPO_PUBLIC_ATTENDANCE_EDGE_INVOCATION_KEY`** + deployed function required.
 
-## 6. Anon key exposure risks
+**Remaining:**
 
-| Risk | Evidence |
-|--------|-----------|
-| **Anon key bundled in web build** | `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` in `client.js` — typical Vite pattern exposes these to any user who opens devtools or the built JS. |
-| **Anon key in mobile** | `EXPO_PUBLIC_SUPABASE_URL` + `EXPO_PUBLIC_SUPABASE_ANON_KEY` in `attendance-android-app/src/supabase.ts` — public env prefix implies embeddable keys. |
-| **Broad data exfiltration** | With anon key + current RLS, clients can read **employees** (PII), **hr_login_credentials**, **attendance_logs**, **employee_locations**, **attendance_access_requests**, **shops** per policies and grants. | `schema.sql` |
-| **Data destruction / tampering** | Same policies allow anon **UPDATE/DELETE** on several tables where granted (e.g. employees, hr_login_credentials, attendance_access_requests). | `schema.sql` |
+- Bearer secret in mobile bundle; spoofed coords can still satisfy geofence if attacker knows coords inside radius..
+- **`face_verified`** still originates from client.
 
 ---
 
-## 7. Current mitigation gaps (what is **not** implemented here)
+## 6. Anon key exposure
 
-The following are **not** present in this repo as implemented controls:
-
-- Supabase Auth (email/phone/OAuth) for HR or employees with JWT-backed RLS.
-- Password hashing (bcrypt/Argon2) for `hr_login_credentials`; passwords are plaintext in DB and query.
-- Row-level policies keyed on `auth.uid()` or custom claims.
-- Edge Functions, RPCs, or triggers that validate attendance, geofence, or face server-side.
-- Rate limiting, audit logging, or IP/device binding for sensitive writes.
-- Separation of **read** vs **write** roles (e.g. HR UI using user JWT vs service role only on server).
-- Certificate pinning / app attestation for mobile.
-- Encryption of PII at rest beyond whatever the host provides (not configured in repo).
-
-**Partial integrity controls (not security boundaries):** e.g. unique partial indexes on `attendance_access_requests` for one pending row per employee/card (`schema.sql`, migration `20260511120000_access_requests_employee_id_and_pending_unique.sql`) — reduce duplicates, **not** authorization.
+**Residual anon surface:** active employee read, shops read, access_request insert/read patterns, **`employee_locations` upsert**. HR web uses **authenticated** JWT for guarded tables after migrations.
 
 ---
 
-## 8. Production blockers
+## 7. Mitigation backlog (incremental — not exhaustive)
 
-These block responsible public production deployment **as implemented**:
+Implemented in-repo relative to earliest audits:
 
-1. **Anon + open RLS** on HR PII, credentials, attendance, and locations (`schema.sql`).
-2. **Plaintext HR passwords** queried from the client (`login.js`, `hr_login_credentials` schema).
-3. **No real authentication** tying the web app to Postgres; `App.jsx` localStorage gate only.
-4. **Attendance and location integrity** entirely client-side; anon insert/upsert allows forgery and mass abuse.
-5. **Single anon key** grants excessive read/write surface to any possessor of the key or compromised front-end.
+- **Supabase Auth** for HR UI; **JWT** + **`hr_users`** for admin RLS.
+- **Edge `mark-attendance`** with audit table `attendance_audit_events` (`20260513140000…`).
+- **Legacy `INSERT` punches** removed (**`20260515120000…`**).
+
+Still open / backlog:
+
+- **Authenticated device writes** on `employee_locations` (eliminate anon upsert path).
+- Tighter anon on `attendance_access_requests`.
+- Rotate / replace mobile Edge invocation bearer with **JWT or per-device**.
+- Operational rate limits / abuse dashboards (hosting/API layer).
 
 ---
 
-## 9. Recommended hardening phases
+## 8. Production readiness notes
 
-Phases are **sequential recommendations** aligned with typical migration cost; none of these exist in the repo today unless explicitly added later.
+Historical “blockers” list is **narrowed**. Remaining systemic concerns:
 
-### Phase A — Stop the bleeding (credentials & anon surface)
+1. **`EXPO_PUBLIC_ATTENDANCE_EDGE_INVOCATION_KEY` exposure** — treat key as confidential; rotate on leak.
+2. **`employee_locations` anon writes** until device-auth rollout.
+3. **GPS + face assertions** trusted from client payloads at Edge without hardware attestation
 
-- Move HR authentication to **Supabase Auth** (or another IdP) and **remove** `hr_login_credentials` from client-readable paths, or restrict that table to `service_role` only and delete anon policies.
-- **Hash** passwords if any custom credential table must remain (not implemented now).
-- Revoke anon **DELETE/UPDATE** on tables that do not require public writes; narrow `GRANT` to minimum.
+---
 
-### Phase B — RLS tied to identity
+## 9. Recommended hardening phases (remainder)
 
-- Replace `using (true)` policies with policies based on **`auth.uid()`** and role tables (e.g. `is_hr(auth.uid())`), or use **service_role** only from a trusted backend for admin operations.
-- Employees: decide whether mobile needs read-only subset vs full HR CRUD.
+Incremental state: **Phase A/B/C partly done** via Supabase Auth + `hr_users` RLS migrations; **attendance punches** Edge-only (**`mark-attendance`** + migration `20260515120000`); **`hr_login_credentials`** dropped once empty.
 
-### Phase C — Server-side attendance & location
-
-- Insert `attendance_logs` only via **Edge Function / backend** using `service_role`, validating punch window, optional device id, and **server-side** geofence (understanding GPS can still be spoofed — this raises bar).
-- Restrict `employee_locations` writes similarly; optionally validate speed/distance between updates (heuristic only).
-
-### Phase D — Mobile and key hygiene
-
-- Prefer **authenticated** Supabase users for employees where feasible; short-lived tokens; minimal `EXPO_PUBLIC_*` secrets.
-- Operational: key rotation, monitoring on `auth.audit_log` / API logs, abuse detection.
-
-### Phase E — Defense in depth
-
-- Separate environments (staging/prod), backup/restore testing, incident runbooks — outside code but required for production.
+| Phase | Recommended next steps |
+|-------|-------------------------|
+| **A–B remainder** | Tighten remaining anon paths (`attendance_access_requests`, `employee_locations`). |
+| **C remainder** | **Authenticated device / Edge** writes for locations; optional server geo heuristics. |
+| **D** | Rotate Edge invocation bearer; shorten secret lifetime; migrate employees to JWT where feasible. |
+| **E** | Operational runbooks, staging/prod split, backups. |
 
 ---
 
@@ -145,10 +123,11 @@ Phases are **sequential recommendations** aligned with typical migration cost; n
 
 | Topic | Primary sources |
 |--------|------------------|
-| Schema, grants, RLS | `management system/supabase/schema.sql`, migrations under `management system/supabase/migrations/` |
-| HR login | `management system/src/module0/auth/lib/login.js`, `App.jsx`, `LoginPage.jsx` |
-| Web Supabase client | `management system/src/module1/employees/lib/supabase/client.js` |
-| Mobile client, punch, access requests, location sync | `Attendance System/attendance-android-app/src/supabase.ts`, `src/lib/attendanceApi.ts`, `src/lib/locationChecker.ts`, `src/lib/accessRequestsApi.ts`, `src/locationTask.ts`, `src/screens/ScanScreen.tsx` |
+| Schema, grants, RLS | `apps/web-admin/supabase/migrations/` (prefer over static `schema.sql` for drift) |
+| HR login | `apps/web-admin/src/core/auth/` |
+| Web Supabase client | `apps/web-admin/src/module1/employees/lib/supabase/client.js` |
+| Edge mark-attendance | `apps/web-admin/supabase/functions/mark-attendance/index.ts`; `backend/edge-functions/mark-attendance/README.md` |
+| Mobile punch + location | `apps/mobile-attendance/src/lib/attendanceApi.ts`, `src/locationTask.ts`, related screens/libs |
 
 ---
 

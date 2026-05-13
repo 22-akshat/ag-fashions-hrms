@@ -1,0 +1,19 @@
+{
+  "name": "@ag-fashions/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/geo.js",
+    "./geo": "./src/geo.js",
+    "./security": "./src/security/index.js",
+    "./security-v2/policyEngine": "./src/security-v2/policyEngine.js",
+    "./security-v2/anomalyScoring": "./src/security-v2/anomalyScoring.js",
+    "./security-v2/deviceTrustV2": "./src/security-v2/deviceTrustV2.js",
+    "./security-v2/fraudRules": "./src/security-v2/fraudRules.js",
+    "./attendance/shiftClassification": "./src/attendance/shiftClassification.js"
+  },
+  "files": [
+    "src"
+  ]
+}
